@@ -69,6 +69,7 @@ func (p *Poller) pollUser(ctx context.Context, user *models.User) error {
 	}
 
 	for _, item := range items {
+		log.Default().Printf("Processing %s", item.Track.Name)
 		artists := make([]string, len(item.Track.Artists))
 		for j, a := range item.Track.Artists {
 			artists[j] = a.Name
