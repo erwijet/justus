@@ -60,6 +60,7 @@ func (p *Poller) pollAll(ctx context.Context) {
 }
 
 func (p *Poller) pollUser(ctx context.Context, user *models.User) error {
+	log.Default().Printf("Polling user %s (%s)", user.SpotifyID, user.DisplayName)
 	client := p.authHandler.SpotifyClient(ctx, user)
 
 	items, err := client.PlayerRecentlyPlayed(ctx)

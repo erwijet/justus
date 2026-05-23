@@ -1,0 +1,32 @@
+service: justus
+image: erwijet/justus
+
+servers:
+  web:
+    hosts: [web-1]
+    options:
+      dns: [100.100.100.100, 1.1.1.1] # use web-1 tailscale magicDNS for postgres resolution
+
+proxy:
+  ssl: false
+  host: justus.holewinski.dev
+  app_port: 3000
+  healthcheck:
+    path: /healthcheck
+    interval: 3
+
+registry:
+  username: erwijet
+  password:
+    - KAMAL_REGISTRY_PASSWORD
+
+builder:
+  arch: amd64
+
+env:
+  clear:
+    SPOTIFY_REDIRECT_URI: https://justus.holewinski.dev/callback
+  secret:
+    - DATABASE_URL
+    - SPOTIFY_CLIENT_ID
+    - SPOTIFY_CLIENT_SECRET

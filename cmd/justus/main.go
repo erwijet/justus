@@ -41,6 +41,11 @@ func main() {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /login", spotifyAuth.Login)
 	mux.HandleFunc("GET /callback", spotifyAuth.Callback)
+	mux.Handle("GET /healthcheck", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		json.NewEncoder(w).Encode(map[string]bool{
+			"ok": true,
+		})
+	}))
 	mux.Handle("GET /me", spotifyAuth.RequireUser(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		user := auth.UserFromContext(r.Context())
 		w.Header().Set("Content-Type", "application/json")
