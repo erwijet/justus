@@ -31,7 +31,7 @@ func main() {
 	spotifyAuth := auth.NewHandler(db,
 		os.Getenv("SPOTIFY_CLIENT_ID"),
 		os.Getenv("SPOTIFY_CLIENT_SECRET"),
-		os.Getenv("SPOTIFY_REDIRECT_URL"),
+		os.Getenv("SPOTIFY_REDIRECT_URI"),
 	)
 
 	p := poller.New(db, spotifyAuth)
