@@ -1,0 +1,9 @@
+justus
+
+!cmd/**/*
+
+.env
+gen/
+
+# OS
+.DS_Store
