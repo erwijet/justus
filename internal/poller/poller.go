@@ -4,29 +4,45 @@ import (
 	"context"
 	"log"
 	"strings"
+	"sync"
 	"time"
 
+	"github.com/google/uuid"
 	"gorm.io/gorm"
-	"gorm.io/gorm/clause"
 
 	"justus/internal/auth"
 	"justus/internal/models"
 )
 
+const pollInterval = 30 * time.Second
+const listenThreshold = 0.80
+
+type trackingState struct {
+	spotifyTrackID string
+	trackName      string
+	artistNames    []string
+	durationMs     int
+	accumulatedMs  int
+	lastPollTime   time.Time
+}
+
 type Poller struct {
 	db          *gorm.DB
 	authHandler *auth.Handler
+	mu          sync.Mutex
+	tracking    map[uuid.UUID]*trackingState
 }
 
 func New(db *gorm.DB, authHandler *auth.Handler) *Poller {
-	return &Poller{db: db, authHandler: authHandler}
+	return &Poller{
+		db:          db,
+		authHandler: authHandler,
+		tracking:    make(map[uuid.UUID]*trackingState),
+	}
 }
 
-// Start runs the polling loop every 10 minutes. Blocks until ctx is cancelled.
 func (p *Poller) Start(ctx context.Context) {
-	p.pollAll(ctx)
-
-	ticker := time.NewTicker(10 * time.Minute)
+	ticker := time.NewTicker(pollInterval)
 	defer ticker.Stop()
 
 	for {
@@ -54,42 +70,105 @@ func (p *Poller) pollAll(ctx context.Context) {
 
 	for _, user := range users {
 		if err := p.pollUser(ctx, &user); err != nil {
+			log.Printf("poller: processing user %s (%s)", user.SpotifyID, user.DisplayName)
 			log.Printf("poller: user %s: %v", user.SpotifyID, err)
 		}
 	}
 }
 
 func (p *Poller) pollUser(ctx context.Context, user *models.User) error {
-	log.Default().Printf("Polling user %s (%s)", user.SpotifyID, user.DisplayName)
 	client := p.authHandler.SpotifyClient(ctx, user)
 
-	items, err := client.PlayerRecentlyPlayed(ctx)
+	playing, err := client.PlayerCurrentlyPlaying(ctx)
 	if err != nil {
 		return err
 	}
 
-	for _, item := range items {
-		log.Default().Printf("Processing %s", item.Track.Name)
-		artists := make([]string, len(item.Track.Artists))
-		for j, a := range item.Track.Artists {
-			artists[j] = a.Name
-		}
+	p.mu.Lock()
+	defer p.mu.Unlock()
 
-		var song models.Song
-		p.db.Where(models.Song{SpotifyID: string(item.Track.ID)}).
-			Attrs(models.Song{
-				Name:       item.Track.Name,
-				ArtistName: strings.Join(artists, ", "),
-			}).
-			FirstOrCreate(&song)
+	state := p.tracking[user.ID]
+	now := time.Now()
 
-		listen := models.Listen{
-			UserID:   user.ID,
-			SongID:   song.ID,
-			PlayedAt: item.PlayedAt,
+	// Nothing playing or no track
+	if playing == nil || playing.Item == nil {
+		if state != nil {
+			p.finalize(user, state)
+			delete(p.tracking, user.ID)
 		}
-		p.db.Clauses(clause.OnConflict{DoNothing: true}).Create(&listen)
+		return nil
+	}
+
+	trackID := string(playing.Item.ID)
+
+	// Track changed — finalize the old one
+	if state != nil && state.spotifyTrackID != trackID {
+		p.finalize(user, state)
+		state = nil
+	}
+
+	// Start tracking a new track, seed with current progress
+	if state == nil {
+		artists := make([]string, len(playing.Item.Artists))
+		for i, a := range playing.Item.Artists {
+			artists[i] = a.Name
+		}
+		p.tracking[user.ID] = &trackingState{
+			spotifyTrackID: trackID,
+			trackName:      playing.Item.Name,
+			artistNames:    artists,
+			durationMs:     int(playing.Item.Duration),
+			accumulatedMs:  int(playing.Progress),
+			lastPollTime:   now,
+		}
+		return nil
+	}
+
+	// Same track, accumulate only while actively playing
+	if playing.Playing {
+		elapsed := int(now.Sub(state.lastPollTime).Milliseconds())
+		state.accumulatedMs += elapsed
+	}
+	state.lastPollTime = now
+
+	// Record and reset if the threshold has been reached
+	if state.durationMs > 0 && float64(state.accumulatedMs) >= float64(state.durationMs)*listenThreshold {
+		p.recordListen(user, state)
+		state.accumulatedMs = 0
 	}
 
 	return nil
+}
+
+func (p *Poller) finalize(user *models.User, state *trackingState) {
+	if state.durationMs <= 0 {
+		return
+	}
+
+	ratio := float64(state.accumulatedMs) / float64(state.durationMs)
+	if ratio < listenThreshold {
+		log.Printf("poller: user %s skipped %s (%.0f%%)", user.SpotifyID, state.trackName, ratio*100)
+		return
+	}
+
+	p.recordListen(user, state)
+}
+
+func (p *Poller) recordListen(user *models.User, state *trackingState) {
+	log.Printf("poller: user %s listened to %s", user.SpotifyID, state.trackName)
+
+	var song models.Song
+	p.db.Where(models.Song{SpotifyID: state.spotifyTrackID}).
+		Attrs(models.Song{
+			Name:       state.trackName,
+			ArtistName: strings.Join(state.artistNames, ", "),
+		}).
+		FirstOrCreate(&song)
+
+	listen := models.Listen{
+		UserID:   user.ID,
+		SongID:   song.ID,
+		PlayedAt: time.Now(),
+	}
+	p.db.Create(&listen)
 }
