@@ -14,7 +14,7 @@ import (
 	"justus/internal/models"
 )
 
-const pollInterval = 30 * time.Second
+const pollInterval = 10 * time.Second
 const listenThreshold = 0.80
 
 type trackingState struct {
