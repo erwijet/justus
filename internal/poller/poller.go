@@ -77,6 +77,7 @@ func (p *Poller) pollAll(ctx context.Context) {
 }
 
 func (p *Poller) pollUser(ctx context.Context, user *models.User) error {
+	log.Printf("poller [%s, %s]: polling...", user.DisplayName, user.SpotifyID)
 	client := p.authHandler.SpotifyClient(ctx, user)
 
 	playing, err := client.PlayerCurrentlyPlaying(ctx)
@@ -92,6 +93,7 @@ func (p *Poller) pollUser(ctx context.Context, user *models.User) error {
 
 	// Nothing playing or no track
 	if playing == nil || playing.Item == nil {
+		log.Printf("poller [%s, %s]: not playing", user.DisplayName, user.SpotifyID)
 		if state != nil {
 			p.finalize(user, state)
 			delete(p.tracking, user.ID)
@@ -103,12 +105,14 @@ func (p *Poller) pollUser(ctx context.Context, user *models.User) error {
 
 	// Track changed — finalize the old one
 	if state != nil && state.spotifyTrackID != trackID {
+		log.Printf("poller [%s, %s]: track switched", user.DisplayName, user.SpotifyID)
 		p.finalize(user, state)
 		state = nil
 	}
 
 	// Start tracking a new track, seed with current progress
 	if state == nil {
+		log.Printf("poller [%s, %s]: begin tracking %s", user.DisplayName, user.SpotifyID, playing.Item.Name)
 		artists := make([]string, len(playing.Item.Artists))
 		for i, a := range playing.Item.Artists {
 			artists[i] = a.Name
@@ -126,6 +130,7 @@ func (p *Poller) pollUser(ctx context.Context, user *models.User) error {
 
 	// Same track, accumulate only while actively playing
 	if playing.Playing {
+		log.Printf("poller [%s, %s]: playback in progress", user.DisplayName, user.SpotifyID)
 		elapsed := int(now.Sub(state.lastPollTime).Milliseconds())
 		state.accumulatedMs += elapsed
 	}
@@ -133,6 +138,7 @@ func (p *Poller) pollUser(ctx context.Context, user *models.User) error {
 
 	// Record and reset if the threshold has been reached
 	if state.durationMs > 0 && float64(state.accumulatedMs) >= float64(state.durationMs)*listenThreshold {
+		log.Printf("poller [%s, %s]: threshold reached, resetting", user.DisplayName, user.SpotifyID)
 		p.recordListen(user, state)
 		state.accumulatedMs = 0
 	}
@@ -141,13 +147,14 @@ func (p *Poller) pollUser(ctx context.Context, user *models.User) error {
 }
 
 func (p *Poller) finalize(user *models.User, state *trackingState) {
+	log.Printf("poller [%s, %s]: finalizing", user.DisplayName, user.SpotifyID)
 	if state.durationMs <= 0 {
 		return
 	}
 
 	ratio := float64(state.accumulatedMs) / float64(state.durationMs)
 	if ratio < listenThreshold {
-		log.Printf("poller: user %s skipped %s (%.0f%%)", user.SpotifyID, state.trackName, ratio*100)
+		log.Printf("poller [%s, %s]: skipped %s (%.0f%%)", user.DisplayName, user.SpotifyID, state.trackName, ratio*100)
 		return
 	}
 
@@ -155,7 +162,7 @@ func (p *Poller) finalize(user *models.User, state *trackingState) {
 }
 
 func (p *Poller) recordListen(user *models.User, state *trackingState) {
-	log.Printf("poller: user %s listened to %s", user.SpotifyID, state.trackName)
+	log.Printf("poller [%s, %s]: writing listen for %s", user.DisplayName, user.SpotifyID, state.trackName)
 
 	var song models.Song
 	p.db.Where(models.Song{SpotifyID: state.spotifyTrackID}).
